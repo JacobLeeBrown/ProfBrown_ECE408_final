@@ -33,7 +33,6 @@ __global__ void unroll(int B, int C, int H, int W, int K, int float *X, float *X
 		}
 	}
 	
-
 }
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
@@ -73,19 +72,14 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &w)
 {
-
-    // Use mxnet's CHECK_EQ to do assertions.
-    // Remove this assertion when you do your implementation!
-    CHECK_EQ(0, 1) << "Remove this line and replace with your implementation";
-
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];     // Batch size
     const int C = x.shape_[1];     // Input Feature Maps
     const int H = x.shape_[2];     // Height of input maps
     const int W = x.shape_[3];     // Width  of input maps
     const int M = y.shape_[1];     // Output Feature Maps
-    const int H_out = H-K+1; // Height of output maps
-    const int W_out = W-K+1; // Width  of output maps
+    const int H_out = H-K+1;	   // Height of output maps
+    const int W_out = W-K+1; 	   // Width  of output maps
     const int K = w.shape_[3];     // Filter Dimensions
     // ...
 
