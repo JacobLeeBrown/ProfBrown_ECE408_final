@@ -178,13 +178,17 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int num_threads = C * H_out * W_out;
     const int num_blocks = ceil(num_threads / (BLOCK_SIZE * 1.0));
 
+	float *deviceInput;
+	float *deviceOutput;
+	cudaMalloc((void**)&deviceInput, sizeof(float)*H*W);
+	cudaMalloc((void**)&deviceOutput, sizeof(float)*W_unroll*H_unroll);
     // For each image in the batch
-    for (int b = 0; b < B; b++)
-    {
-      unroll_Kernel<<<num_blocks, BLOCK_SIZE>>>(x[b]);
-      gemm(H_unroll, M, W_unroll, X_unrolled, W, Y[b]);
+    cudaMemcpy(deviceInput, x.dtpr_, sizeof(float)*H*W); //a little bit confused on how this will work with batches
+	for (int b = 0; b < B; b++) {
+      unroll_Kernel<<<ceil(H_unroll*W_unroll/1204), 1024>>>(C, W_out, W_unroll K, x.dptr_ , X_unroll);
     }
-
+	
+	matrixMultiply(float *A, float *B, float *C, int numARows, int numAColumns, int numBRows, int numBColumns, int numCRows, int numCColumns)
 
     // Set the kernel dimensions
     // dim3 gridDim(0);
