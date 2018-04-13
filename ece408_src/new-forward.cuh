@@ -8,17 +8,18 @@ namespace mxnet
 {
 namespace op
 {
+#define TILE_WIDTH 16
 
-__global__ void unroll(int B, int C, int H, int W, int K, int float *X, float *X_unroll){
-	int c, s, H_out, W_out, h_unroll, w_base, b, p, q;
-	int t = blockId.x * 1024 + threadId.x;
+__global__ void unroll(int B, int C, int H, int W, int K, float *X, float *X_unroll){
+	int c, s, h_out, w_out, h_unroll, w_unroll, w_base, b, p, q;
+	int t = blockIdx.x * 1024 + threadIdx.x;
 	int H_out = H-K+1;
 	int W_out = W-K+1;
 	int W_unroll = H_out*W_out;
 
 	if(t<C*W_unroll){
 		c = t/W_unroll;
-		s = t%w_unroll;
+		s = t%W_unroll;
 		h_out = s/W_out;
 		w_out = s%W_out;
 		h_unroll = h_out*W_out+w_out;
@@ -27,12 +28,70 @@ __global__ void unroll(int B, int C, int H, int W, int K, int float *X, float *X
 			for(p=0;p<K;p++){
 				for(q=0;q<K;q++){
 				w_unroll = w_base+p*K+q;
-				X_unroll[b, h_unroll, w_unroll] = X[b, c, h+p, w+q);
+				X_unroll[b][h_unroll][w_unroll] = x4d(b,c,h_out+p,w_out+q);
 				}
 			}
 		}
 	}
 	
+}
+
+__global__ void matrixMultiply(float *A, float *B, float *C, 
+                               int numARows, int numAColumns,
+                               int numBRows, int numBColumns,
+                               int numCRows, int numCColumns) {
+  //@@ Insert code to implement matrix multiplication here
+  //@@ You have to use shared memory for this MP
+  __shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
+  __shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
+  
+  int tx = threadIdx.x; int ty = threadIdx.y;
+
+  // Identify the row and column of the C element to work on
+  int Row = blockIdx.y*TILE_WIDTH + ty;
+  int Col = blockIdx.x*TILE_WIDTH + tx;
+  
+  // We need to calculate the phases to account for different shaped inputs
+  int phases = ceil(numAColumns/(TILE_WIDTH*1.0));
+
+  float Cvalue = 0;
+  
+  // Loop over the A and B tiles required to compute the C element
+  for (int m = 0; m < phases; ++m) 
+  {
+    // Store this useful value
+    int curTile = m * TILE_WIDTH;
+    // Collaborative loading of A and B tiles into shared memory
+    // We can only load data into our tiles if the data is there to load
+    
+    // First we check if we are within the bounds of input A
+    if (Row < numARows && tx + curTile < numAColumns) {
+      subTileA[ty][tx] = A[Row*numAColumns + curTile + tx];
+    }
+    else { // We are outside the bounds of input A
+      subTileA[ty][tx] = 0.;
+    }
+    
+    // Now we repeat for the bounds of input B
+    if (Col < numBColumns  && curTile + ty < numBRows) {
+      subTileB[ty][tx] = B[(curTile + ty)*numBColumns + Col];
+    }
+    else { // We are outside the bounds of input B
+      subTileB[ty][tx] = 0.;
+    }
+    
+    __syncthreads();
+    // Now we can update our local partial inner product
+    for (int k = 0; k < TILE_WIDTH; ++k) {
+      Cvalue += subTileA[ty][k] * subTileB[k][tx];
+    }
+    __syncthreads();
+  }
+  
+  // Make sure we are within the bounds of output C
+  if (Row < numCRows && Col < numCColumns) {
+    C[Row*numCColumns + Col] = Cvalue;
+  }
 }
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
@@ -83,13 +142,18 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int K = w.shape_[3];     // Filter Dimensions
     // ...
 
-	// Unroll Kernel Call
+	// unroll_kernel call
 	int num_blocks = ceil(C*H_out*W_out)/1024;
 	int w_unroll = h*W_out+w;
 	int h_unroll = w_base+p*K+q;
 	float *X_unrolled = malloc(B*W_unroll*H_unroll*sizeof(float));
 
 	unroll<<<num_blocks,1024>>>(B, C, H, W, K, x.dptr, X_unrolled); 
+
+	// maxtrix_mult call
+	dim3 dimGrid(ceil(numCColumns/(TILE_WIDTH*1.0)), ceil(numCRows/(TILE_WIDTH*1.0)), 1);
+  	dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, 1);
+	matrixMultiply<<<dimGrid, dimBlock>>>(w.dptr, X_unrolled, y.dptr, K, K, H_out*W_out, C*K*K, H_out, W_out);
 
     // Set the kernel dimensions
     // dim3 gridDim(0);
