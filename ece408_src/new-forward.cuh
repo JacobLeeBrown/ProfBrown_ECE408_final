@@ -105,10 +105,10 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
 }
 
 
-__global__ void matrixMultiply(float *A, float *B, float *C, 
-                               int numARows, int numAColumns,
-                               int numBRows, int numBColumns,
-                               int numCRows, int numCColumns)
+__global__ void matrixMultiply(const float *A, const float *B, float *C, 
+                               const int numARows, const int numAColumns,
+                               const int numBRows, const int numBColumns,
+                               const int numCRows, const int numCColumns)
 {
   __shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
   __shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
@@ -186,7 +186,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
 
     // Allocated the space for the unrolled input (which will get re-written)
-    float* X_unrolled = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+    float* x_unrolled = (float *)malloc(W_unroll * H_unroll * sizeof(float));
 
 
     // ~~~ Set the kernel dimensions ~~~
@@ -203,15 +203,15 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
 
     // Cast k cuz it's being dumb...
-    const float**** K_casted = (float****)k;
+    const float* k_ptr = k.dptr_;
 
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
     for (int b = 0; b < B; b++)
     {
-      float**** X_casted = (float****)x[b];
+      float* x_ptr = &x.dptr_[b];
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
-                                                  W_out, K, X_casted, X_unrolled);
+                                                  W_out, K, x_ptr, x_unrolled);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       // Now all we have to do is matrix multiply
       /* Remember, we treat:
@@ -219,8 +219,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
        * X_unrolled as a 2D   H_unroll by W_unroll matrix, and
        * y[b] as a       2D   M by (H_out * W_out = W_unroll) matrix
        */
-      float**** Y_casted = (float****)y[b];
-      matrixMultiply<<<matrixGrid, matrixBlocks>>>(K_casted, X_unrolled, Y_casted,
+      float* y_ptr = &y.dptr_[b];
+      matrixMultiply<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
                                                    M, (C*K*K),
                                                    H_unroll, W_unroll,
                                                    M, W_unroll);
