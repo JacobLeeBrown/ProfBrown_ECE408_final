@@ -78,13 +78,13 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
     // Determine which channel the thread maps to
     cur_channel = t / W_unroll;
     // Determine which ouput element the thread maps to, which is equivalent to
-    // the current row we're calculating for the unrolled matrix
+    // the current column we're calculating for the unrolled matrix
     cur_outCol  = t % W_unroll;
 
     // These values are the top left corner of the section we're applying the
     // filter bank to within the input channels 
-    start_inRow = cur_output / W_out; // Starting row in channel maps
-    start_inCol = cur_output % W_out; // Starting column in channel maps
+    start_inRow = cur_outCol / W_out; // Starting row in channel maps
+    start_inCol = cur_outCol % W_out; // Starting column in channel maps
 
     // This value gives us the starting row of the current channel's sections
     // within the unrolled matrix
@@ -92,6 +92,7 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
 
     // For each element in the filter bank
     for(p = 0; p < K; p++)
+    {
       for(q = 0; q < K; q++)
       {
         // Now we calculate the exact row index for the unrolled matrix
@@ -99,6 +100,7 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
         // Finally, we use the macros to unroll the input data
         x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
       }
+    }
   }
 }
 
@@ -176,20 +178,20 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int M = y.shape_[1];      // Output Feature Maps
     const int K = k.shape_[3];      // Filter Dimensions
 
-    const int W_out = W – K + 1;    // Height of output maps
-    const int H_out = H – K + 1;    // Width  of output maps
+    const int W_out = (W - K + 1);    // Height of output maps
+    const int H_out = (H - K + 1);    // Width  of output maps
 
     const int H_unroll = H_out * W_out; // Height of unrolled matrix
     const int W_unroll = C * K * K;     // Width  of unrolled matrix
 
 
     // Allocated the space for the unrolled input (which will get re-written)
-    float* X_unrolled = malloc(W_unroll * H_unroll * sizeof(float));
+    float* X_unrolled = (float *)malloc(W_unroll * H_unroll * sizeof(float));
 
 
     // ~~~ Set the kernel dimensions ~~~
     // First we setup for the unroll kernels
-    //const int num_threads = C * H_out * W_out; idky this was in the book, it's unused
+    const int num_threads = C * H_out * W_out;
     const int unroll_blocks = ceil(num_threads / (BLOCK_SIZE * 1.0));
     const dim3 unrollBlocks(BLOCK_SIZE, 1, 1);
     const dim3 unrollGrid(unroll_blocks, 1, 1);
@@ -200,12 +202,16 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const dim3 matrixGrid(ceil(maxCols / (TILE_WIDTH * 1.0)), ceil(maxRows / (TILE_WIDTH * 1.0)), 1);
 
 
+    // Cast k cuz it's being dumb...
+    const float* K_casted = (float*)k;
+
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
     for (int b = 0; b < B; b++)
     {
+      float* X_casted = (float*)x[b];
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
-                                                  W_out, K, x[b], X_unrolled);
+                                                  W_out, K, X_casted, X_unrolled);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       // Now all we have to do is matrix multiply
       /* Remember, we treat:
@@ -213,8 +219,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
        * X_unrolled as a 2D   H_unroll by W_unroll matrix, and
        * y[b] as a       2D   M by (H_out * W_out = W_unroll) matrix
        */
-      matrixMultiply<<<matrixGrid, matrixBlocks>>>(k, X_unrolled, y[b],
-                                                   M, C*K*K,
+      float* Y_casted = (float*)y[b];
+      matrixMultiply<<<matrixGrid, matrixBlocks>>>(K_casted, X_unrolled, Y_casted,
+                                                   M, (C*K*K),
                                                    H_unroll, W_unroll,
                                                    M, W_unroll);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
