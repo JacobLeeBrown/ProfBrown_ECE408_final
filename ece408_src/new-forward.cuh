@@ -203,13 +203,13 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
 
     // Cast k cuz it's being dumb...
-    const float* K_casted = (float*)k;
+    const float**** K_casted = (float****)k;
 
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
     for (int b = 0; b < B; b++)
     {
-      float* X_casted = (float*)x[b];
+      float**** X_casted = (float****)x[b];
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, X_casted, X_unrolled);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
@@ -219,7 +219,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
        * X_unrolled as a 2D   H_unroll by W_unroll matrix, and
        * y[b] as a       2D   M by (H_out * W_out = W_unroll) matrix
        */
-      float* Y_casted = (float*)y[b];
+      float**** Y_casted = (float****)y[b];
       matrixMultiply<<<matrixGrid, matrixBlocks>>>(K_casted, X_unrolled, Y_casted,
                                                    M, (C*K*K),
                                                    H_unroll, W_unroll,
