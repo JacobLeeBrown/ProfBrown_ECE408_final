@@ -82,6 +82,8 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
 
   // Some local values
   int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
+  //TODO: rename this
+  int name;
   // Grab the thread's index
   int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
 
@@ -103,6 +105,9 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
     // within the unrolled matrix
     start_outRow = cur_channel * K * K;
 
+    //TODO: change name after rename
+    name = start_inRow*W_out+start_inCol;
+
     // For each element in the filter bank
     for(p = 0; p < K; p++)
     {
@@ -111,7 +116,11 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
         // Now we calculate the exact row index for the unrolled matrix
         cur_outRow = start_outRow + p * K + q;
         // Finally, we use the macros to unroll the input data
-        x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        if(cur_channel < C && (start_inRow+p)<H_in && (start_inCol + q)<W_in){
+          //printf("meet requirements");
+          //TODO: change name after rename
+          x2o(cur_outRow, name) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        }
       }
     }
   }
@@ -175,6 +184,28 @@ __global__ void matrixMultiply(const float *A, const float *B, float *C,
   }
 }
 
+/*seq code for debug purpose*/
+// void unroll(int C, int H, int W, int K, float *X, float *X_unroll){
+//   int c, h, w, p, q, w_base, w_unroll, h_unroll;
+//   int H_out = H-K+1;
+//   int W_out = W-K+1;
+//   for (c = 0; c<C;c++){
+//     w_base=c*K*K;
+//     for (p=0;p<K;p++){
+//       for (q=0;q<K;q++){
+//         for(h=0;h<H_out;h++){
+//           for(w=0;w<W_out;w++){
+//             w_unroll = w_base+p*K+q;
+//             h_unroll = h*W_out +w;
+//             X_unroll[w_unroll*(H_out*W_out)+h_unroll] = X[c*(W*H)+(h+p)*W+w+q];
+//           }
+//         }
+//       }
+//     }
+//   }
+// }
+
+
 /* 
    This function is called by new-inl.h
    Any code you write should be executed by this function.
@@ -194,9 +225,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int W_out = (W - K + 1);    // Height of output maps
     const int H_out = (H - K + 1);    // Width  of output maps
 
-    const int H_unroll = H_out * W_out; // Height of unrolled matrix
-    const int W_unroll = C * K * K;     // Width  of unrolled matrix
-
+    const int H_unroll = C * K * K;         // Height of unrolled matrix
+    const int W_unroll = H_out * W_out;     // Width  of unrolled matrix
 
     // Allocated the space for the unrolled input (which will get re-written)
     float* x_unrolled;// = (float *)malloc(W_unroll * H_unroll * sizeof(float));
@@ -215,27 +245,19 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const dim3 matrixGrid(ceil(maxCols / (TILE_WIDTH * 1.0)), ceil(maxRows / (TILE_WIDTH * 1.0)), 1);
 
 
-    // Cast k cuz it's being dumb...
+    // Grab the pointer to the filter maps
     const float* k_ptr = k.dptr_;
 
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
-
     for (int b = 0; b < B; b++)
     {
-      float* x_ptr = &x.dptr_[b];
+      float* x_ptr = &x.dptr_[b*C*H*W];
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, x_ptr, x_unrolled);
-      //std::cout<<b<<std::endl;
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-      //gpuErrchk(cudaDeviceSynchronize());
-      // Now all we have to do is matrix multiply
-      /* Remember, we treat:
-       * k as a          2D   M by C*K*K matrix,
-       * X_unrolled as a 2D   H_unroll by W_unroll matrix, and
-       * y[b] as a       2D   M by (H_out * W_out = W_unroll) matrix
-       */
-      float* y_ptr = &y.dptr_[b];
+
+      float* y_ptr = &y.dptr_[b*M*W_out*H_out];
       matrixMultiply<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
                                                    M, (C*K*K),
                                                    H_unroll, W_unroll,
@@ -245,6 +267,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+
+    // We
+    MSHADOW_CUDA_CALL(cudaFree(x_unrolled));
 }
 
 /* 
