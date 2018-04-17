@@ -184,6 +184,28 @@ __global__ void matrixMultiply(const float *A, const float *B, float *C,
   }
 }
 
+/*seq code for debug purpose*/
+// void unroll(int C, int H, int W, int K, float *X, float *X_unroll){
+//   int c, h, w, p, q, w_base, w_unroll, h_unroll;
+//   int H_out = H-K+1;
+//   int W_out = W-K+1;
+//   for (c = 0; c<C;c++){
+//     w_base=c*K*K;
+//     for (p=0;p<K;p++){
+//       for (q=0;q<K;q++){
+//         for(h=0;h<H_out;h++){
+//           for(w=0;w<W_out;w++){
+//             w_unroll = w_base+p*K+q;
+//             h_unroll = h*W_out +w;
+//             X_unroll[w_unroll*(H_out*W_out)+h_unroll] = X[c*(W*H)+(h+p)*W+w+q];
+//           }
+//         }
+//       }
+//     }
+//   }
+// }
+
+
 /* 
    This function is called by new-inl.h
    Any code you write should be executed by this function.
@@ -233,35 +255,52 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     for (int b = 0; b < B; b++)
     {
+
+      /*__global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
+                              const int H_unroll, const int W_unroll, const int W_out,
+                              const int K, const float* X, float* X_unroll)
+      */
       float* x_ptr = &x.dptr_[b];
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, x_ptr, x_unrolled);
       //std::cout<<b<<std::endl;
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-
-      float *xtemp, *xutemp;
-      xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-      xutemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-      MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_ptr, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
-      MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
-
-      printf("X original\n");
-      for (int i =1300; i<1600; i++){
-        printf("%f", xtemp[i]);
-      }
-      printf("X unrolled\n");
-      for (int i =1300; i<1600; i++){
-        printf("%f", xutemp[i]);
-      }
+      
+      // float *xtemp, *xutemp, *x_unroll_host;
+      // xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      // xutemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      // x_unroll_host = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      // MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_ptr, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
+      // MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
 
 
+      // unroll(C, H, W, K, xtemp, x_unroll_host);
+
+
+      // printf("X check \n");
+      // for (int i = 0; i<W_unroll*H_unroll; i++){
+      //   if(xutemp[i]!=x_unroll_host[i]){
+      //     printf("not the same");
+      //     break;
+      //   }
+      // }
+      // printf("X parallel\n");
+      // for (int i =1300; i<1600; i++){
+      //   printf("%f", xutemp[i]);
+      // }
+      
       //gpuErrchk(cudaDeviceSynchronize());
+
       // Now all we have to do is matrix multiply
       /* Remember, we treat:
        * k as a          2D   M by C*K*K matrix,
        * X_unrolled as a 2D   H_unroll by W_unroll matrix, and
        * y[b] as a       2D   M by (H_out * W_out = W_unroll) matrix
        */
+      /*__global__ void matrixMultiply(const float *A, const float *B, float *C, 
+                               const int numARows, const int numAColumns,
+                               const int numBRows, const int numBColumns,
+                               const int numCRows, const int numCColumns)*/
       float* y_ptr = &y.dptr_[b];
       matrixMultiply<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
                                                    M, (C*K*K),
