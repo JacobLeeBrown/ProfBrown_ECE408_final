@@ -222,11 +222,18 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int M = y.shape_[1];      // Output Feature Maps
     const int K = k.shape_[3];      // Filter Dimensions
 
+    // const int B = 1;      // Batch size
+    // const int C = 3;      // Input Feature Maps
+    // const int H = 3;      // Height of input maps
+    // const int W = 3;      // Width  of input maps
+    // const int M = 2;      // Output Feature Maps
+    // const int K = 2;      // Filter Dimensions
+
     const int W_out = (W - K + 1);    // Height of output maps
     const int H_out = (H - K + 1);    // Width  of output maps
 
-    //const int H_unroll = H_out * W_out; // Height of unrolled matrix
-    //const int W_unroll = C * K * K;     // Width  of unrolled matrix
+    // const int H_unroll = H_out * W_out; // Height of unrolled matrix
+    // const int W_unroll = C * K * K;     // Width  of unrolled matrix
     const int H_unroll = C * K * K; // Height of unrolled matrix
     const int W_unroll = H_out * W_out;     // Width  of unrolled matrix
 
@@ -256,22 +263,26 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     for (int b = 0; b < B; b++)
     {
 
-      /*__global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
-                              const int H_unroll, const int W_unroll, const int W_out,
-                              const int K, const float* X, float* X_unroll)
-      */
-      float* x_ptr = &x.dptr_[b];
+      float* x_ptr = &x.dptr_[b*C*H*W];
+      // float x_ptr [27] = {1,2,0,1,1,3,0,2,2,0,2,1,0,3,2,1,1,0,1,2,1,0,1,3,3,3,2};
+      // float k_ptr [24] = {1,1,2,2,1,1,1,1,0,1,1,0,1,0,0,1,2,1,2,1,1,2,2,0};
+      // float *x_k, *k_k;
+      // cudaMalloc((void **)&x_k, 27 * sizeof(float));
+      // cudaMalloc((void **)&k_k, 24 * sizeof(float));
+      // cudaMemcpy(x_k, x_ptr, 27*sizeof(float),cudaMemcpyHostToDevice);
+      // cudaMemcpy(k_k, k_ptr, 24*sizeof(float),cudaMemcpyHostToDevice);
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, x_ptr, x_unrolled);
       //std::cout<<b<<std::endl;
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       
-      // float *xtemp, *xutemp, *x_unroll_host;
-      // xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-      // xutemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-      // x_unroll_host = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-      // MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_ptr, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
-      // MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
+      //float *xtemp, *xutemp, *x_unroll_host;
+      //float *xutemp;
+      //xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      //xutemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      //x_unroll_host = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      //MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_k, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
+      //MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
 
 
       // unroll(C, H, W, K, xtemp, x_unroll_host);
@@ -285,7 +296,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
       //   }
       // }
       // printf("X parallel\n");
-      // for (int i =1300; i<1600; i++){
+      // for (int i =0; i<W_unroll * H_unroll; i++){
       //   printf("%f", xutemp[i]);
       // }
       
@@ -297,17 +308,23 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
        * X_unrolled as a 2D   H_unroll by W_unroll matrix, and
        * y[b] as a       2D   M by (H_out * W_out = W_unroll) matrix
        */
-      /*__global__ void matrixMultiply(const float *A, const float *B, float *C, 
-                               const int numARows, const int numAColumns,
-                               const int numBRows, const int numBColumns,
-                               const int numCRows, const int numCColumns)*/
-      float* y_ptr = &y.dptr_[b];
+
+
+      float* y_ptr = &y.dptr_[b*M*W_out*H_out];
       matrixMultiply<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
                                                    M, (C*K*K),
                                                    H_unroll, W_unroll,
                                                    M, W_unroll);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-      break;
+
+      // float *ytemp;
+      // ytemp = (float *)malloc(M*W_unroll * sizeof(float));
+      // cudaMemcpy(ytemp, y_ptr, M*W_unroll * sizeof(float), cudaMemcpyDeviceToHost);
+      // printf("y\n");
+      // for (int i =0; i<M*W_unroll; i++){
+      //   printf("%f", ytemp[i]);
+      // }
+      //break;
     }
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
