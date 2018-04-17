@@ -47,8 +47,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 // #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 // #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
-
-
 // #undef y4d
 // #undef x4d
 // #undef k4d
@@ -82,8 +80,6 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
 
   // Some local values
   int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
-  //TODO: rename this
-  int name;
   // Grab the thread's index
   int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
 
@@ -105,9 +101,6 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
     // within the unrolled matrix
     start_outRow = cur_channel * K * K;
 
-    //TODO: change name after rename
-    name = start_inRow*W_out+start_inCol;
-
     // For each element in the filter bank
     for(p = 0; p < K; p++)
     {
@@ -115,12 +108,8 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
       {
         // Now we calculate the exact row index for the unrolled matrix
         cur_outRow = start_outRow + p * K + q;
-        // Finally, we use the macros to unroll the input data
-        if(cur_channel < C && (start_inRow+p)<H_in && (start_inCol + q)<W_in){
-          //printf("meet requirements");
-          //TODO: change name after rename
-          x2o(cur_outRow, name) = x3i(cur_channel, start_inRow + p, start_inCol + q);
-        }
+        // We use the macros to unroll the input data neatly :D
+        x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
       }
     }
   }
@@ -184,28 +173,6 @@ __global__ void matrixMultiply(const float *A, const float *B, float *C,
   }
 }
 
-/*seq code for debug purpose*/
-// void unroll(int C, int H, int W, int K, float *X, float *X_unroll){
-//   int c, h, w, p, q, w_base, w_unroll, h_unroll;
-//   int H_out = H-K+1;
-//   int W_out = W-K+1;
-//   for (c = 0; c<C;c++){
-//     w_base=c*K*K;
-//     for (p=0;p<K;p++){
-//       for (q=0;q<K;q++){
-//         for(h=0;h<H_out;h++){
-//           for(w=0;w<W_out;w++){
-//             w_unroll = w_base+p*K+q;
-//             h_unroll = h*W_out +w;
-//             X_unroll[w_unroll*(H_out*W_out)+h_unroll] = X[c*(W*H)+(h+p)*W+w+q];
-//           }
-//         }
-//       }
-//     }
-//   }
-// }
-
-
 /* 
    This function is called by new-inl.h
    Any code you write should be executed by this function.
@@ -228,9 +195,11 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int H_unroll = C * K * K;         // Height of unrolled matrix
     const int W_unroll = H_out * W_out;     // Width  of unrolled matrix
 
+
     // Allocated the space for the unrolled input (which will get re-written)
-    float* x_unrolled;// = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+    float* x_unrolled;
     cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * sizeof(float));
+
 
     // ~~~ Set the kernel dimensions ~~~
     // First we setup for the unroll kernels
@@ -268,7 +237,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
-    // We
+    // We free the unrolled matrix memory
     MSHADOW_CUDA_CALL(cudaFree(x_unrolled));
 }
 
