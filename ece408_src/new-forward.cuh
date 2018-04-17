@@ -82,6 +82,8 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
 
   // Some local values
   int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
+  //TODO: rename this
+  int name;
   // Grab the thread's index
   int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
 
@@ -103,6 +105,9 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
     // within the unrolled matrix
     start_outRow = cur_channel * K * K;
 
+    //TODO: change name after rename
+    name = start_inRow*W_out+start_inCol;
+
     // For each element in the filter bank
     for(p = 0; p < K; p++)
     {
@@ -111,7 +116,11 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
         // Now we calculate the exact row index for the unrolled matrix
         cur_outRow = start_outRow + p * K + q;
         // Finally, we use the macros to unroll the input data
-        x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        if(cur_channel < C && (start_inRow+p)<H_in && (start_inCol + q)<W_in){
+          //printf("meet requirements");
+          //TODO: change name after rename
+          x2o(cur_outRow, name) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        }
       }
     }
   }
@@ -194,9 +203,10 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int W_out = (W - K + 1);    // Height of output maps
     const int H_out = (H - K + 1);    // Width  of output maps
 
-    const int H_unroll = H_out * W_out; // Height of unrolled matrix
-    const int W_unroll = C * K * K;     // Width  of unrolled matrix
-
+    //const int H_unroll = H_out * W_out; // Height of unrolled matrix
+    //const int W_unroll = C * K * K;     // Width  of unrolled matrix
+    const int H_unroll = C * K * K; // Height of unrolled matrix
+    const int W_unroll = H_out * W_out;     // Width  of unrolled matrix
 
     // Allocated the space for the unrolled input (which will get re-written)
     float* x_unrolled;// = (float *)malloc(W_unroll * H_unroll * sizeof(float));
@@ -228,6 +238,23 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
                                                   W_out, K, x_ptr, x_unrolled);
       //std::cout<<b<<std::endl;
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+
+      float *xtemp, *xutemp;
+      xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      xutemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_ptr, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
+      MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
+
+      printf("X original\n");
+      for (int i =1300; i<1600; i++){
+        printf("%f", xtemp[i]);
+      }
+      printf("X unrolled\n");
+      for (int i =1300; i<1600; i++){
+        printf("%f", xutemp[i]);
+      }
+
+
       //gpuErrchk(cudaDeviceSynchronize());
       // Now all we have to do is matrix multiply
       /* Remember, we treat:
@@ -241,10 +268,12 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
                                                    H_unroll, W_unroll,
                                                    M, W_unroll);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+      break;
     }
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+    MSHADOW_CUDA_CALL(cudaFree(x_unrolled));
 }
 
 /* 
