@@ -12,6 +12,19 @@ namespace op
 #define BLOCK_SIZE 1024
 #define TILE_WIDTH 16
 
+/*local error check macro*/
+/*
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+*/
+
 // __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
 // {
 
@@ -186,8 +199,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
 
     // Allocated the space for the unrolled input (which will get re-written)
-    float* x_unrolled = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-
+    float* x_unrolled;// = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * sizeof(float));
 
     // ~~~ Set the kernel dimensions ~~~
     // First we setup for the unroll kernels
@@ -207,12 +220,15 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
+
     for (int b = 0; b < B; b++)
     {
       float* x_ptr = &x.dptr_[b];
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, x_ptr, x_unrolled);
+      //std::cout<<b<<std::endl;
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+      //gpuErrchk(cudaDeviceSynchronize());
       // Now all we have to do is matrix multiply
       /* Remember, we treat:
        * k as a          2D   M by C*K*K matrix,
