@@ -16,3 +16,5 @@ commands:
     - nice -n20 make -C /mxnet # build mxnet
     - pip2 install --user -e /mxnet/python   # install python bindings
     - /usr/bin/time python m3.1.py           # run and time milestone 3.1
+    - nvprof -o timeline.nvprof m3.1.py 10   # generate timeline for nvvp
+    - nvprof --analysis-metrics -o analysis.nvprof m3.1.py 10
