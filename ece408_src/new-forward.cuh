@@ -12,6 +12,14 @@ namespace op
 #define BLOCK_SIZE 1024
 #define TILE_WIDTH 16
 
+//#define MAX_OUTPUT_CHANNELS 16
+//#define MAX_INPUT_CHANNELS  6
+//#define MAX_FILTER_WIDTH    5
+#define MAX_FILTER_BANK 16*6*5*5
+
+// We define constant memory for the filter data
+__constant__ float Kc[MAX_FILTER_BANK];
+
 /*local error check macro*/
 /*
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -115,15 +123,17 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
   }
 }
 
-
-__global__ void matrixMultiply(const float *A, const float *B, float *C, 
-                               const int numARows, const int numAColumns,
-                               const int numBRows, const int numBColumns,
-                               const int numCRows, const int numCColumns)
+/* Modifications to this matrix multiply kernel for specializing this project:
+ * 1. Removed `A` parameter because it's now in constant memory (Kc)
+ */
+__global__ void convMM(const float *B, float *C, 
+                       const int numARows, const int numAColumns,
+                       const int numBRows, const int numBColumns,
+                       const int numCRows, const int numCColumns)
 {
   __shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
   __shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
-  
+
   int tx = threadIdx.x; int ty = threadIdx.y;
 
   // Identify the row and column of the C element to work on
@@ -145,7 +155,7 @@ __global__ void matrixMultiply(const float *A, const float *B, float *C,
     
     // First we check if we are within the bounds of input A
     if (Row < numARows && tx + curTile < numAColumns) {
-      subTileA[ty][tx] = A[Row*numAColumns + curTile + tx];
+      subTileA[ty][tx] = Kc[Row*numAColumns + curTile + tx];
     }
     else { // We are outside the bounds of input A
       subTileA[ty][tx] = 0.;
@@ -200,6 +210,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     float* x_unrolled;
     cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * sizeof(float));
 
+    // Grab the pointer to the filter maps
+    const float* k_ptr = k.dptr_;
+    cudaMemcpyToSymbol(Kc, k_ptr, (M*C*K*K)*sizeof(float));
 
     // ~~~ Set the kernel dimensions ~~~
     // First we setup for the unroll kernels
@@ -213,10 +226,6 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const dim3 matrixBlocks(TILE_WIDTH, TILE_WIDTH, 1);
     const dim3 matrixGrid(ceil(maxCols / (TILE_WIDTH * 1.0)), ceil(maxRows / (TILE_WIDTH * 1.0)), 1);
 
-
-    // Grab the pointer to the filter maps
-    const float* k_ptr = k.dptr_;
-
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
     for (int b = 0; b < B; b++)
@@ -227,10 +236,10 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
       float* y_ptr = &y.dptr_[b*M*W_out*H_out];
-      matrixMultiply<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
-                                                   M, (C*K*K),
-                                                   H_unroll, W_unroll,
-                                                   M, W_unroll);
+      convMM<<<matrixGrid, matrixBlocks>>>(x_unrolled, y_ptr,
+                                           M, (C*K*K),
+                                           H_unroll, W_unroll,
+                                           M, W_unroll);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
     }
 
