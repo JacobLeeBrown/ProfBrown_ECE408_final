@@ -10,7 +10,8 @@ namespace op
 {
 
 #define BLOCK_SIZE 1024
-#define TILE_WIDTH 16
+#define TILE_WIDTH 32
+#define FUSION 1
 
 //#define MAX_OUTPUT_CHANNELS 16
 //#define MAX_INPUT_CHANNELS  6
@@ -88,8 +89,7 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
 
   // Some local values
   int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
-  //TODO: rename this
-  int name;
+
   // Grab the thread's index
   int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
 
@@ -110,9 +110,6 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
     // This value gives us the starting row of the current channel's sections
     // within the unrolled matrix
     start_outRow = cur_channel * K * K;
-
-    //TODO: change name after rename
-    name = start_inRow*W_out+start_inCol;
 
     // For each element in the filter bank
     for(p = 0; p < K; p++)
@@ -136,7 +133,7 @@ __global__ void convMM(const float *B, float *C,
                        const int numBRows, const int numBColumns,
                        const int numCRows, const int numCColumns)
 {
-  __shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
+  // __shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
   __shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
 
   int tx = threadIdx.x; int ty = threadIdx.y;
@@ -159,12 +156,12 @@ __global__ void convMM(const float *B, float *C,
     // We can only load data into our tiles if the data is there to load
     
     // First we check if we are within the bounds of input A
-    if (Row < numARows && tx + curTile < numAColumns) {
-      subTileA[ty][tx] = Kc[Row*numAColumns + curTile + tx];
-    }
-    else { // We are outside the bounds of input A
-      subTileA[ty][tx] = 0.;
-    }
+    // if (Row < numARows && tx + curTile < numAColumns) {
+    //   subTileA[ty][tx] = Kc[Row*numAColumns + curTile + tx];
+    // }
+    // else { // We are outside the bounds of input A
+    //   subTileA[ty][tx] = 0.;
+    // }
     
     // Now we repeat for the bounds of input B
     if (Col < numBColumns  && curTile + ty < numBRows) {
@@ -177,7 +174,8 @@ __global__ void convMM(const float *B, float *C,
     __syncthreads();
     // Now we can update our local partial inner product
     for (int k = 0; k < TILE_WIDTH; ++k) {
-      Cvalue += subTileA[ty][k] * subTileB[k][tx];
+      // Cvalue += subTileA[ty][k] * subTileB[k][tx];
+      Cvalue += Kc[Row*numAColumns + curTile + k] * subTileB[k][tx];
     }
     __syncthreads();
   }
@@ -204,6 +202,14 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int M = y.shape_[1];      // Output Feature Maps
     const int K = k.shape_[3];      // Filter Dimensions
 
+
+    // const int B = 1;      // Batch size
+    // const int C = 3;      // Input Feature Maps
+    // const int H = 3;      // Height of input maps
+    // const int W = 3;      // Width  of input maps
+    // const int M = 2;      // Output Feature Maps
+    // const int K = 2;      // Filter Dimensions
+
     const int W_out = (W - K + 1);    // Height of output maps
     const int H_out = (H - K + 1);    // Width  of output maps
 
@@ -213,7 +219,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // Allocated the space for the unrolled input (which will get re-written)
     float* x_unrolled;
-    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * sizeof(float));
+    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll*FUSION * sizeof(float));
 
     // Grab the pointer to the filter maps
     const float* k_ptr = k.dptr_;
@@ -236,9 +242,34 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     for (int b = 0; b < B; b++)
     {
       float* x_ptr = &x.dptr_[b*C*H*W];
+
+      // float x_d [54] = {1,2,0,1,1,3,0,2,2,0,2,1,0,3,2,1,1,0,1,2,1,0,1,3,3,3,2,
+      //                   0,0,1,3,2,1,2,0,3,1,1,3,2,1,0,1,1,1,2,2,3,3,0,3,0,0,1};
+      // float k_d [24] = {1,1,2,2,1,1,1,1,0,1,1,0,1,0,0,1,2,1,2,1,1,2,2,0};
+      // float *x_k, *k_k;
+      // cudaMalloc((void **)&x_k, 54 * sizeof(float));
+      // cudaMalloc((void **)&k_k, 24 * sizeof(float));
+      // cudaMemcpy(x_k, x_d, 54*sizeof(float),cudaMemcpyHostToDevice);
+      // cudaMemcpy(k_k, k_d, 24*sizeof(float),cudaMemcpyHostToDevice);
+
       unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, x_ptr, x_unrolled);
+
+      // unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C*FUSION, H, W, H_unroll, W_unroll,
+      //                                              W_out, K, x_k, x_unrolled);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+
+      //float *xtemp, *xutemp, *x_unroll_host;
+      // float *xutemp;
+      //xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      // xutemp = (float *)malloc(W_unroll * H_unroll * FUSION * sizeof(float));
+      //x_unroll_host = (float *)malloc(W_unroll * H_unroll * sizeof(float));
+      //MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_k, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
+      // MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, FUSION*W_unroll * H_unroll * sizeof(float),
+      //                                  cudaMemcpyDeviceToHost));
+      // for (int i =0; i<W_unroll * H_unroll*FUSION; i++){
+      //   printf("%.0f ", xutemp[i]);
+      // }
 
       float* y_ptr = &y.dptr_[b*M*W_out*H_out];
       convMM<<<matrixGrid, matrixBlocks>>>(x_unrolled, y_ptr,
@@ -246,7 +277,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
                                            H_unroll, W_unroll,
                                            M, W_unroll);
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-      break;
+      // break;
     }
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
