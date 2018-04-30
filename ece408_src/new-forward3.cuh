@@ -255,20 +255,23 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // For each image in the batch
     for (int b = 0; b < B; b += STREAM)
     {
-      for(int i = 0; i < STREAM; i++){
+      for(int i = 0; i < STREAM; i++)
+      {
         float* xu_ptr1 = &x_unrolled[i * W_unroll * H_unroll];
         float* x_ptr1 = &x.dptr_[(b+i)*C*H*W];
         unroll_Kernel<<<unrollGrid, unrollBlocks, 0, stream[i]>>>(C, H, W, H_unroll, W_unroll,
                                                                   W_out, K, x_ptr1, xu_ptr1);
       }
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-      for(int i = 0; i < STREAM; i++){
+      for(int i = 0; i < STREAM; i++)
+      {
         float* xu_ptr1 = &x_unrolled[i * W_unroll * H_unroll];
         float* y_ptr1 = &y.dptr_[(b+i)*M*W_out*H_out];
         convMM<<<matrixGrid, matrixBlocks, 0,stream[i]>>>(xu_ptr1, y_ptr1,
                                                           M, (C*K*K),
                                                           H_unroll, W_unroll,
                                                           M, W_unroll);
+      }
     }
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
