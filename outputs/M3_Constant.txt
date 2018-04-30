@@ -1,0 +1,74 @@
+✱ Running /usr/bin/time python m4.1.py
+Loading fashion-mnist data...
+done
+Loading model...
+done
+New Inference
+Op Time: 0.675961
+Op Time: 1.286228
+Correctness: 0.8451 Model: ece408
+3.43user 1.82system 0:04.80elapsed 109%CPU (0avgtext+0avgdata 1140220maxresident)k
+0inputs+3144outputs (0major+158779minor)pagefaults 0swaps
+✱ Running nvprof python m4.1.py
+Loading fashion-mnist data...
+done
+Loading model...
+==344== NVPROF is profiling process 344, command: python m4.1.py
+done
+New Inference
+Op Time: 1.055335
+Op Time: 2.138855
+Correctness: 0.8451 Model: ece408
+==344== Profiling application: python m4.1.py
+==344== Profiling result:
+Time(%)      Time     Calls       Avg       Min       Max  Name
+ 77.22%  1.74808s     20000  87.404us  33.663us  145.18us  mxnet::op::convMM(float const *, float*, int, int, int, int, int, int)
+ 17.99%  407.18ms     20000  20.359us  19.200us  22.847us  mxnet::op::unroll_Kernel(int, int, int, int, int, int, int, float const *, float*)
+  1.28%  28.959ms         1  28.959ms  28.959ms  28.959ms  sgemm_sm35_ldg_tn_128x8x256x16x32
+  1.02%  23.054ms        14  1.6467ms  1.5040us  22.215ms  [CUDA memcpy HtoD]
+  0.97%  21.938ms         2  10.969ms  7.3002ms  14.638ms  void mshadow::cuda::MapPlanLargeKernel<mshadow::sv::saveto, int=8, int=1024, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=4, float>, float>, mshadow::expr::Plan<mshadow::expr::BinaryMapExp<mshadow::op::mul, mshadow::expr::ScalarExp<float>, mshadow::Tensor<mshadow::gpu, int=4, float>, float, int=1>, float>>(mshadow::gpu, unsigned int, mshadow::Shape<int=2>, int=4, int)
+  0.63%  14.171ms         2  7.0855ms  257.24us  13.914ms  void cudnn::detail::activation_fw_4d_kernel<float, float, int=128, int=1, int=4, cudnn::detail::tanh_func<float>>(cudnnTensorStruct, float const *, cudnn::detail::activation_fw_4d_kernel<float, float, int=128, int=1, int=4, cudnn::detail::tanh_func<float>>, cudnnTensorStruct*, float, cudnnTensorStruct*, int, cudnnTensorStruct*)
+  0.59%  13.403ms         1  13.403ms  13.403ms  13.403ms  void cudnn::detail::pooling_fw_4d_kernel<float, float, cudnn::detail::maxpooling_func<float, cudnnNanPropagation_t=0>, int=0>(cudnnTensorStruct, float const *, cudnn::detail::pooling_fw_4d_kernel<float, float, cudnn::detail::maxpooling_func<float, cudnnNanPropagation_t=0>, int=0>, cudnnTensorStruct*, cudnnPoolingStruct, float, cudnnPoolingStruct, int, cudnn::reduced_divisor, float)
+  0.18%  4.0556ms         1  4.0556ms  4.0556ms  4.0556ms  sgemm_sm35_ldg_tn_64x16x128x8x32
+  0.06%  1.2784ms         1  1.2784ms  1.2784ms  1.2784ms  void mshadow::cuda::MapPlanLargeKernel<mshadow::sv::saveto, int=8, int=1024, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=2, float>, float>, mshadow::expr::Plan<mshadow::expr::ScalarExp<float>, float>>(mshadow::gpu, unsigned int, mshadow::Shape<int=2>, int=2, int)
+  0.05%  1.1112ms         1  1.1112ms  1.1112ms  1.1112ms  void mshadow::cuda::SoftmaxKernel<int=8, float, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=2, float>, float>, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=2, float>, float>>(mshadow::gpu, int=2, unsigned int)
+  0.01%  178.14us        13  13.703us  2.0800us  75.135us  void mshadow::cuda::MapPlanKernel<mshadow::sv::saveto, int=8, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=2, float>, float>, mshadow::expr::Plan<mshadow::expr::ScalarExp<float>, float>>(mshadow::gpu, unsigned int, mshadow::Shape<int=2>, int=2)
+  0.01%  147.29us         2  73.646us  16.160us  131.13us  void mshadow::cuda::MapPlanKernel<mshadow::sv::plusto, int=8, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=2, float>, float>, mshadow::expr::Plan<mshadow::expr::Broadcast1DExp<mshadow::Tensor<mshadow::gpu, int=1, float>, float, int=2, int=1>, float>>(mshadow::gpu, unsigned int, mshadow::Shape<int=2>, int=2)
+  0.01%  132.25us         1  132.25us  132.25us  132.25us  sgemm_sm35_ldg_tn_32x16x64x8x16
+  0.00%  22.976us         1  22.976us  22.976us  22.976us  void mshadow::cuda::MapPlanKernel<mshadow::sv::saveto, int=8, mshadow::expr::Plan<mshadow::Tensor<mshadow::gpu, int=2, float>, float>, mshadow::expr::Plan<mshadow::expr::ReduceWithAxisExp<mshadow::red::maximum, mshadow::Tensor<mshadow::gpu, int=3, float>, float, int=3, bool=1, int=2>, float>>(mshadow::gpu, unsigned int, mshadow::Shape<int=2>, int=2)
+  0.00%  8.6080us         1  8.6080us  8.6080us  8.6080us  [CUDA memcpy DtoH]
+  0.00%  8.3840us         2  4.1920us  3.9680us  4.4160us  [CUDA memcpy DtoD]
+==344== API calls:
+Time(%)      Time     Calls       Avg       Min       Max  Name
+ 38.59%  2.49394s     40004  62.342us  6.9140us  14.645ms  cudaDeviceSynchronize
+ 21.24%  1.37308s        18  76.282ms  20.229us  686.31ms  cudaStreamCreateWithFlags
+ 16.73%  1.08161s        12  90.135ms  1.0810us  287.78ms  cudaFree
+ 13.91%  899.31ms        27  33.308ms  138.27us  894.79ms  cudaMemGetInfo
+  4.25%  274.81ms     40026  6.8650us  6.2230us  508.89us  cudaLaunch
+  2.99%  193.34ms    340150     568ns     428ns  503.99us  cudaSetupArgument
+  0.98%  63.302ms        29  2.1828ms  5.6250us  32.791ms  cudaStreamSynchronize
+  0.73%  47.374ms         9  5.2637ms  9.2900us  22.935ms  cudaMemcpy2DAsync
+  0.38%  24.300ms     40026     607ns     454ns  12.741us  cudaConfigureCall
+  0.13%  8.5378ms        47  181.66us  9.8080us  1.2038ms  cudaMalloc
+  0.02%  1.0232ms       352  2.9060us     518ns  83.993us  cuDeviceGetAttribute
+  0.01%  900.85us       114  7.9020us     912ns  247.44us  cudaEventCreateWithFlags
+  0.01%  710.92us         4  177.73us  176.03us  179.31us  cuDeviceTotalMem
+  0.01%  367.03us         6  61.171us  26.911us  123.11us  cudaMemcpy
+  0.01%  334.76us         4  83.691us  57.278us  117.42us  cudaStreamCreate
+  0.00%  108.45us         4  27.111us  19.440us  34.578us  cuDeviceGetName
+  0.00%  98.622us       104     948ns     686ns  2.1260us  cudaDeviceGetAttribute
+  0.00%  84.870us        34  2.4960us     892ns  8.6770us  cudaSetDevice
+  0.00%  67.308us         2  33.654us  33.474us  33.834us  cudaMemcpyToSymbol
+  0.00%  42.367us         2  21.183us  20.597us  21.770us  cudaStreamCreateWithPriority
+  0.00%  27.586us        10  2.7580us  1.6830us  6.3540us  cudaGetDevice
+  0.00%  16.667us        20     833ns     637ns  1.1190us  cudaPeekAtLastError
+  0.00%  5.7470us         6     957ns     587ns  1.7990us  cuDeviceGetCount
+  0.00%  5.3790us         2  2.6890us  2.3540us  3.0250us  cudaStreamWaitEvent
+  0.00%  4.6160us         6     769ns     596ns     979ns  cuDeviceGet
+  0.00%  4.5080us         1  4.5080us  4.5080us  4.5080us  cudaStreamGetPriority
+  0.00%  4.3070us         2  2.1530us  1.4350us  2.8720us  cudaEventRecord
+  0.00%  3.8930us         5     778ns     595ns     998ns  cudaGetLastError
+  0.00%  3.4590us         3  1.1530us     992ns  1.3300us  cuInit
+  0.00%  3.4580us         2  1.7290us  1.6460us  1.8120us  cudaDeviceGetStreamPriorityRange
+  0.00%  3.3930us         3  1.1310us  1.0500us  1.2230us  cuDriverGetVersion
+  0.00%  1.4240us         1  1.4240us  1.4240us  1.4240us  cudaGetDeviceCount
