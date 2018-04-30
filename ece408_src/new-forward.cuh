@@ -10,8 +10,9 @@ namespace op
 {
 
 #define BLOCK_SIZE 1024
-#define TILE_WIDTH 32
-#define FUSION 16    //number of batches to be fused together, set to one means no fusion 
+#define TILE_WIDTH 32 
+#define COMBINE 1    //number of batches to be combined together, set to one means no combination 
+#define STREAM 16    //number of streams 
 
 //#define MAX_OUTPUT_CHANNELS 16
 //#define MAX_INPUT_CHANNELS  6
@@ -81,18 +82,23 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
    X        = A *single* image as input maps
    X_unroll = Target location for unrolled matrix
    */
-
+  __shared__ float X_s[BLOCK_SIZE];
   // Macro for accessing the 3 dimensional *input* data
   #define x3i(i2, i1, i0) X[(i2) * (H_in * W_in) + (i1) * (W_in) + i0]
   // Macro for accessing the 2 dimensional *output* data
   #define x2o(i1, i0) X_unroll[(i1) * (W_unroll) + i0]
-
+  
   // Some local values
   int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
 
   // Grab the thread's index
   int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-
+  if(t < C*W_in*H_in){
+    X_s[threadIdx.x] = X[t];
+  }
+  else{
+    X_s[threadIdx.x] = 0;
+  }
   // Check that the thread index maps to a column section within bounds
   if (t < C * W_unroll)
   {
@@ -119,11 +125,79 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
         // Now we calculate the exact row index for the unrolled matrix
         cur_outRow = start_outRow + p * K + q;
         // We use the macros to unroll the input data neatly :D
-        x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        // x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        if(cur_channel * (H_in * W_in) + (start_inRow + p) * (W_in) + start_inCol + q
+                      -blockIdx.x*BLOCK_SIZE < BLOCK_SIZE){
+          x2o(cur_outRow, cur_outCol) = X_s[cur_channel * (H_in * W_in) + (start_inRow + p)*
+                                       (W_in) + start_inCol + q - blockIdx.x*BLOCK_SIZE];
+        }
+        else{
+          x2o(cur_outRow, cur_outCol) = X[cur_channel * (H_in * W_in) + (start_inRow + p)*
+                                       (W_in) + start_inCol + q];
+        }
       }
     }
   }
 }
+
+
+//TODO: not working yet
+/*
+__global__ void unroll_Kernel_p(const int C, const int H_in, const int W_in,
+                              const int H_unroll, const int W_unroll, const int W_out,
+                              const int K, const float* X, float* X_unroll)
+{
+
+
+  // Macro for accessing the 3 dimensional *input* data
+  #define x3i(i2, i1, i0) X[(i2) * (H_in * W_in) + (i1) * (W_in) + i0]
+  // Macro for accessing the 2 dimensional *output* data
+  #define x2o(i1, i0) X_unroll[(i1) * (W_unroll) + i0]
+
+  // Some local values
+  int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
+
+  // Grab the thread's index
+  int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+
+  // Check that the thread index maps to a column section within bounds
+  if (t < W_unroll*H_unroll)
+  {
+    // Determine which channel the thread maps to
+    cur_channel = t/(K*K) / W_unroll;
+    // Determine which ouput element the thread maps to, which is equivalent to
+    // the current column we're calculating for the unrolled matrix
+    cur_outCol  = t/(K*K) % W_unroll;
+
+    // These values are the top left corner of the section we're applying the
+    // filter bank to within the input channels 
+    start_inRow = cur_outCol / W_out; // Starting row in channel maps
+    start_inCol = cur_outCol % W_out; // Starting column in channel maps
+
+    // This value gives us the starting row of the current channel's sections
+    // within the unrolled matrix
+    start_outRow = cur_channel * K * K;
+    p = (t-K*K*cur_outCol)/K;
+    q = (t-K*K*cur_outCol)%K;
+    cur_outRow = start_outRow + p * K + q;
+    x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+    // For each element in the filter bank
+    // for(p = 0; p < K; p++)
+    // {
+    //   for(q = 0; q < K; q++)
+    //   {
+    //     // Now we calculate the exact row index for the unrolled matrix
+    //     cur_outRow = start_outRow + p * K + q;
+    //     // We use the macros to unroll the input data neatly :D
+    //     x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+    //   }
+    // }
+
+  }
+}*/
+
+
+
 
 /* Modifications to this matrix multiply kernel for specializing this project:
  * 1. Removed `A` parameter because it's now in constant memory (Kc)
@@ -195,8 +269,8 @@ template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
 
-    cudaStream_t stream[FUSION];
-    for (int i = 0; i < FUSION; ++i)
+    cudaStream_t stream[STREAM];
+    for (int i = 0; i < STREAM; ++i)
       cudaStreamCreate(&stream[i]);
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];      // Batch size
@@ -223,7 +297,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // Allocated the space for the unrolled input (which will get re-written)
     float* x_unrolled;
-    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * FUSION * sizeof(float));
+    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * STREAM * COMBINE * sizeof(float));
 
     // Grab the pointer to the filter maps
     const float* k_ptr = k.dptr_;
@@ -231,7 +305,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // ~~~ Set the kernel dimensions ~~~
     // First we setup for the unroll kernels
-    const int num_threads = C * H_out * W_out;
+    // const int num_threads = C * H_out * W_out;
+    // const int num_threads = H_unroll * W_unroll;
+    const int num_threads = C * H * W;
     const int unroll_blocks = ceil(num_threads / (BLOCK_SIZE * 1.0));
     const dim3 unrollBlocks(BLOCK_SIZE, 1, 1);
     const dim3 unrollGrid(unroll_blocks, 1, 1);
@@ -243,7 +319,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
-    for (int b = 0; b < B; b+=FUSION)
+    for (int b = 0; b < B; b+=STREAM*COMBINE)
     {
       // float* x_ptr = &x.dptr_[b*C*H*W];
 
@@ -260,16 +336,14 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
       // cudaMemcpy(x_k, x_d, 54*sizeof(float),cudaMemcpyHostToDevice);
       // cudaMemcpy(k_k, k_d, 24*sizeof(float),cudaMemcpyHostToDevice);
 
-      for(int i = 0; i<FUSION; i++){
+      for(int i = 0; i<STREAM; i++){
         float* xu_ptr1 = &x_unrolled[i*W_unroll * H_unroll];
         float* x_ptr1 = &x.dptr_[(b+i)*C*H*W];
         unroll_Kernel<<<unrollGrid, unrollBlocks, 0,stream[i]>>>(C, H, W, H_unroll, W_unroll,
                                                   W_out, K, x_ptr1, xu_ptr1);
-        
-        
       }
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-      for(int i = 0; i<FUSION; i++){
+      for(int i = 0; i<STREAM; i++){
         float* xu_ptr1 = &x_unrolled[i*W_unroll * H_unroll];
         float* y_ptr1 = &y.dptr_[(b+i)*M*W_out*H_out];
         convMM<<<matrixGrid, matrixBlocks, 0,stream[i]>>>(xu_ptr1, y_ptr1,
@@ -277,35 +351,19 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
                                            H_unroll, W_unroll,
                                            M, W_unroll);
       }
-      // float* xu_ptr = &x_unrolled[0];
-      // unroll_Kernel<<<unrollGrid, unrollBlocks, 0,stream[0]>>>(C, H, W, H_unroll, W_unroll,
-      //                                             W_out, K, x_ptr, xu_ptr);
-      // float* xu_ptr1 = &x_unrolled[1*W_unroll * H_unroll];
-      // float* x_ptr1 = &x.dptr_[(b+1)*C*H*W];
-      // unroll_Kernel<<<unrollGrid, unrollBlocks, 0,stream[1]>>>(C, H, W, H_unroll, W_unroll,
-      //                                             W_out, K, x_ptr1, xu_ptr1);
-      // float* xu_ptr2 = &x_unrolled[2*W_unroll * H_unroll];
-      // float* x_ptr2 = &x.dptr_[(b+2)*C*H*W];
-      // unroll_Kernel<<<unrollGrid, unrollBlocks, 0,stream[2]>>>(C, H, W, H_unroll, W_unroll,
-      //                                             W_out, K, x_ptr2, xu_ptr2);
-      // float* xu_ptr3 = &x_unrolled[3*W_unroll * H_unroll];
-      // float* x_ptr3 = &x.dptr_[(b+3)*C*H*W];
-      // unroll_Kernel<<<unrollGrid, unrollBlocks, 0,stream[3]>>>(C, H, W, H_unroll, W_unroll,
-      //                                             W_out, K, x_ptr3, xu_ptr3);
 
-      // unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C*FUSION, H, W, H_unroll, W_unroll,
-      //                                              W_out, K, x_k, x_unrolled);
-      // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+
+      MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
       //float *xtemp, *xutemp, *x_unroll_host;
       // float *xutemp;
       //xtemp = (float *)malloc(W_unroll * H_unroll * sizeof(float));
-      // xutemp = (float *)malloc(W_unroll * H_unroll * FUSION * sizeof(float));
+      // xutemp = (float *)malloc(W_unroll * H_unroll * COMBINE * sizeof(float));
       //x_unroll_host = (float *)malloc(W_unroll * H_unroll * sizeof(float));
       //MSHADOW_CUDA_CALL(cudaMemcpy(xtemp, x_k, W_unroll * H_unroll * sizeof(float), cudaMemcpyDeviceToHost));
-      // MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, FUSION*W_unroll * H_unroll * sizeof(float),
+      // MSHADOW_CUDA_CALL(cudaMemcpy(xutemp, x_unrolled, COMBINE*W_unroll * H_unroll * sizeof(float),
       //                                  cudaMemcpyDeviceToHost));
-      // for (int i =0; i<W_unroll * H_unroll*FUSION; i++){
+      // for (int i =0; i<W_unroll * H_unroll*COMBINE; i++){
       //   printf("%.0f ", xutemp[i]);
       // }
 
@@ -314,26 +372,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
       //                                      M, (C*K*K),
       //                                      H_unroll, W_unroll,
       //                                      M, W_unroll);
-      // convMM<<<matrixGrid, matrixBlocks, 0,stream[0]>>>(xu_ptr, y_ptr,
-      //                                      M, (C*K*K),
-      //                                      H_unroll, W_unroll,
-      //                                      M, W_unroll);
-      // float* y_ptr1 = &y.dptr_[(b+1)*M*W_out*H_out];
-      // convMM<<<matrixGrid, matrixBlocks, 0,stream[1]>>>(xu_ptr1, y_ptr1,
-      //                                      M, (C*K*K),
-      //                                      H_unroll, W_unroll,
-      //                                      M, W_unroll);
-      // float* y_ptr2 = &y.dptr_[(b+2)*M*W_out*H_out];
-      // convMM<<<matrixGrid, matrixBlocks, 0,stream[2]>>>(xu_ptr2, y_ptr2,
-      //                                      M, (C*K*K),
-      //                                      H_unroll, W_unroll,
-      //                                      M, W_unroll);
-      // float* y_ptr3 = &y.dptr_[(b+3)*M*W_out*H_out];
-      // convMM<<<matrixGrid, matrixBlocks, 0,stream[3]>>>(xu_ptr3, y_ptr3,
-      //                                      M, (C*K*K),
-      //                                      H_unroll, W_unroll,
-      //                                      M, W_unroll);
-      MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+
+      // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       // break;
     }
 
@@ -341,7 +381,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
     // We free the unrolled matrix memory
-    for (int i = 0; i < FUSION; ++i)
+    for (int i = 0; i < STREAM; ++i)
       cudaStreamDestroy(stream[i]);
     MSHADOW_CUDA_CALL(cudaFree(x_unrolled));
 }
