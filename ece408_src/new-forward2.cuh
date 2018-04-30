@@ -256,7 +256,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
       float* y_ptr = &y.dptr_[b*M*W_out*H_out];
-      convMM<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
+      convMM<<<matrixGrid, matrixBlocks>>>(x_unrolled, y_ptr,
                                            M, (C*K*K),
                                            H_unroll, W_unroll,
                                            M, W_unroll);
