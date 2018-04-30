@@ -10,7 +10,7 @@ namespace op
 {
 
 #define BLOCK_SIZE 1024
-#define TILE_WIDTH 16
+#define TILE_WIDTH 32
 #define STREAM 16    //number of streams 
 
 //#define MAX_OUTPUT_CHANNELS 16
