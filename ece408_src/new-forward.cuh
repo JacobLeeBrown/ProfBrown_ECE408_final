@@ -11,6 +11,7 @@ namespace op
 
 #define BLOCK_SIZE 1024
 #define TILE_WIDTH 32
+#define STREAM 16    //number of streams 
 
 //#define MAX_OUTPUT_CHANNELS 16
 //#define MAX_INPUT_CHANNELS  6
@@ -81,8 +82,15 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
    X_unroll = Target location for unrolled matrix
    */
 
+
+  // Some shared memory because shared memory is bae (don't tell constant memory we said that)
+  __shared__ float X_s[BLOCK_SIZE];
+
+  // Macro for calculating 1D index from 3D inputs
+  #define calc3to1(i2, i1, i0) ((i2) * (H_in * W_in) + (i1) * (W_in) + i0)
   // Macro for accessing the 3 dimensional *input* data
-  #define x3i(i2, i1, i0) X[(i2) * (H_in * W_in) + (i1) * (W_in) + i0]
+  #define x3i(i2, i1, i0) X[calc3to1(i2, i1, i0)]
+  #define x3s(i2, i1, i0) X_s[calc3to1(i2, i1, i0)]
   // Macro for accessing the 2 dimensional *output* data
   #define x2o(i1, i0) X_unroll[(i1) * (W_unroll) + i0]
 
@@ -90,6 +98,13 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
   int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
   // Grab the thread's index
   int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+
+  // Load one element into the shared data
+  if(t < C*W_in*H_in)
+    X_s[threadIdx.x] = X[t];
+  else{
+    X_s[threadIdx.x] = 0;
+  }
 
   // Check that the thread index maps to a column section within bounds
   if (t < C * W_unroll)
@@ -117,7 +132,11 @@ __global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
         // Now we calculate the exact row index for the unrolled matrix
         cur_outRow = start_outRow + p * K + q;
         // We use the macros to unroll the input data neatly :D
-        x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
+        // We check if the data we want is in shared memory
+        if(calc3to1(cur_channel, start_inRow + p, start_inCol + q) < BLOCK_SIZE)
+          x2o(cur_outRow, cur_outCol) = x3s(cur_channel, start_inRow + p, start_inCol + q);
+        else // We have to get the input from global memory
+          x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
       }
     }
   }
@@ -193,6 +212,11 @@ __global__ void convMM(const float *B, float *C,
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
+    // Generate the streams
+    cudaStream_t stream[STREAM];
+    for(int i = 0; i < STREAM; i++)
+      cudaStreamCreate(&stream[i]);
+
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];      // Batch size
     const int C = x.shape_[1];      // Input Feature Maps
@@ -207,10 +231,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int H_unroll = C * K * K;         // Height of unrolled matrix
     const int W_unroll = H_out * W_out;     // Width  of unrolled matrix
 
-
     // Allocated the space for the unrolled input (which will get re-written)
     float* x_unrolled;
-    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * sizeof(float));
+    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * STREAM * sizeof(float));
 
     // Grab the pointer to the filter maps
     const float* k_ptr = k.dptr_;
@@ -230,19 +253,25 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // ~~~ Now we begin the bread n butter of all this hard labor ~~~
     // For each image in the batch
-    for (int b = 0; b < B; b++)
+    for (int b = 0; b < B; b += STREAM)
     {
-      float* x_ptr = &x.dptr_[b*C*H*W];
-      unroll_Kernel<<<unrollGrid, unrollBlocks>>>(C, H, W, H_unroll, W_unroll,
-                                                  W_out, K, x_ptr, x_unrolled);
+      for(int i = 0; i < STREAM; i++)
+      {
+        float* xu_ptr1 = &x_unrolled[i * W_unroll * H_unroll];
+        float* x_ptr1 = &x.dptr_[(b+i)*C*H*W];
+        unroll_Kernel<<<unrollGrid, unrollBlocks, 0, stream[i]>>>(C, H, W, H_unroll, W_unroll,
+                                                                  W_out, K, x_ptr1, xu_ptr1);
+      }
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-
-      float* y_ptr = &y.dptr_[b*M*W_out*H_out];
-      convMM<<<matrixGrid, matrixBlocks>>>(x_unrolled, y_ptr,
-                                           M, (C*K*K),
-                                           H_unroll, W_unroll,
-                                           M, W_unroll);
-      MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+      for(int i = 0; i < STREAM; i++)
+      {
+        float* xu_ptr1 = &x_unrolled[i * W_unroll * H_unroll];
+        float* y_ptr1 = &y.dptr_[(b+i)*M*W_out*H_out];
+        convMM<<<matrixGrid, matrixBlocks, 0,stream[i]>>>(xu_ptr1, y_ptr1,
+                                                          M, (C*K*K),
+                                                          H_unroll, W_unroll,
+                                                          M, W_unroll);
+      }
     }
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
@@ -250,6 +279,10 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // We free the unrolled matrix memory
     MSHADOW_CUDA_CALL(cudaFree(x_unrolled));
+
+    // KILL THE STREAMS!!!
+    for(int i = 0; i < STREAM; i++)
+      cudaStreamDestroy(stream[i]);
 }
 
 /* 
