@@ -131,7 +131,7 @@ __global__ void convMM(const float *B, float *C,
                        const int numBRows, const int numBColumns,
                        const int numCRows, const int numCColumns)
 {
-  __shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
+  //__shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
   __shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
 
   int tx = threadIdx.x; int ty = threadIdx.y;
@@ -153,13 +153,14 @@ __global__ void convMM(const float *B, float *C,
     // Collaborative loading of A and B tiles into shared memory
     // We can only load data into our tiles if the data is there to load
     
+    /* Removed because we'll just read constant memory directly
     // First we check if we are within the bounds of input A
     if (Row < numARows && tx + curTile < numAColumns) {
-      subTileA[ty][tx] = Kc[Row*numAColumns + curTile + tx];
+      subTileA[ty][tx] = A[Row*numAColumns + curTile + tx];
     }
     else { // We are outside the bounds of input A
       subTileA[ty][tx] = 0.;
-    }
+    }*/
     
     // Now we repeat for the bounds of input B
     if (Col < numBColumns  && curTile + ty < numBRows) {
@@ -172,7 +173,8 @@ __global__ void convMM(const float *B, float *C,
     __syncthreads();
     // Now we can update our local partial inner product
     for (int k = 0; k < TILE_WIDTH; ++k) {
-      Cvalue += subTileA[ty][k] * subTileB[k][tx];
+      //Cvalue += subTileA[ty][k] * subTileB[k][tx];
+      Cvalue += Kc[Row*numAColumns + curTile + k] * subTileB[k][tx];
     }
     __syncthreads();
   }
@@ -236,7 +238,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
       MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
       float* y_ptr = &y.dptr_[b*M*W_out*H_out];
-      convMM<<<matrixGrid, matrixBlocks>>>(x_unrolled, y_ptr,
+      convMM<<<matrixGrid, matrixBlocks>>>(k_ptr, x_unrolled, y_ptr,
                                            M, (C*K*K),
                                            H_unroll, W_unroll,
                                            M, W_unroll);
