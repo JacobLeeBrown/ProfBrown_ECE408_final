@@ -11,196 +11,79 @@ namespace op
 
 #define BLOCK_SIZE 1024
 #define TILE_WIDTH 32
+#define COMBINE 32   //number of batches to be combined together
 #define STREAM 16    //number of streams 
 
 //#define MAX_OUTPUT_CHANNELS 16
 //#define MAX_INPUT_CHANNELS  6
-//#define MAX_FILTER_WIDTH    5
+#define K 5
 #define MAX_FILTER_BANK 16*6*5*5
+
+#define IN_SIZE1 64*64
 
 // We define constant memory for the filter data
 __constant__ float Kc[MAX_FILTER_BANK];
 
-/*local error check macro*/
-/*
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+__global__ void convMM(const float *X, float *Y, const int W,
+                       const int H_out, const int W_out, const int M)
 {
-   if (code != cudaSuccess) 
-   {
-      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-      if (abort) exit(code);
-   }
-}
-*/
 
-// __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
-// {
+  __shared__ float Xs[IN_SIZE1];
 
-//     /*
-//     Modify this function to implement the forward pass described in Chapter 16.
-//     We have added an additional dimension to the tensors to support an entire mini-batch
-//     The goal here is to be correct AND fast.
-//     We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
-//     */
+  unsigned int idx = threadIdx.x;
 
-//     const int H_out = H - K + 1;
-//     const int W_out = W - K + 1;
-//     (void)H_out; // silence declared but never referenced warning. remove this line when you start working
-//     (void)W_out; // silence declared but never referenced warning. remove this line when you start working
-
-// // An example use of these macros:
-// // float a = y4d(0,0,0,0)
-// // y4d(0,0,0,0) = a
-// #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-// #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-// #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-
-// #undef y4d
-// #undef x4d
-// #undef k4d
-// }
-
-__global__ void unroll_Kernel(const int C, const int H_in, const int W_in,
-                              const int H_unroll, const int W_unroll, const int W_out,
-                              const int K, const float* X, float* X_unroll)
-{
-  /* This kernel takes a *single* input image as an array of input maps. It will
-   * convert this input data into an unrolled matrix, which will have duplicate
-   * elements.
-   */
-
-  /**** LEGEND ****
-   C        = Number of input maps
-   H_in     = Height of the input maps
-   W_in     = Width of the input maps
-   H_unroll = Height of the unrolled matrix
-   W_unroll = Width of unrolled matrix
-   W_out    = Width of output map
-   K        = Height / Width of filter banks
-   X        = A *single* image as input maps
-   X_unroll = Target location for unrolled matrix
-   */
-
-
-  // Some shared memory because shared memory is bae (don't tell constant memory we said that)
-  __shared__ float X_s[BLOCK_SIZE];
-
-  // Macro for calculating 1D index from 3D inputs
-  #define calc3to1(i2, i1, i0) ((i2) * (H_in * W_in) + (i1) * (W_in) + i0)
-  // Macro for accessing the 3 dimensional *input* data
-  #define x3i(i2, i1, i0) X[calc3to1(i2, i1, i0)]
-  #define x3s(i2, i1, i0) X_s[calc3to1(i2, i1, i0)]
-  // Macro for accessing the 2 dimensional *output* data
-  #define x2o(i1, i0) X_unroll[(i1) * (W_unroll) + i0]
-
-  // Some local values
-  int cur_channel, cur_outCol, start_inRow, start_inCol, start_outRow, cur_outRow, p, q;
-  // Grab the thread's index
-  int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-
-  // Load one element into the shared data
-  if(t < C*W_in*H_in)
-    X_s[threadIdx.x] = X[t];
-  else{
-    X_s[threadIdx.x] = 0;
-  }
-
-  // Check that the thread index maps to a column section within bounds
-  if (t < C * W_unroll)
+  // First we need to load the input maps into shared memory
+  if(idx < (IN_SIZE1 / 2))
   {
-    // Determine which channel the thread maps to
-    cur_channel = t / W_unroll;
-    // Determine which ouput element the thread maps to, which is equivalent to
-    // the current column we're calculating for the unrolled matrix
-    cur_outCol  = t % W_unroll;
+    unsigned int offset = idx + blockIdx.x * IN_SIZE1;
+    Xs[idx] = X[offset];
+    Xs[idx + (IN_SIZE1 / 2)] = X[offset + (IN_SIZE1 / 2)];
+  }
+  __syncthreads();
 
-    // These values are the top left corner of the section we're applying the
-    // filter bank to within the input channels 
-    start_inRow = cur_outCol / W_out; // Starting row in channel maps
-    start_inCol = cur_outCol % W_out; // Starting column in channel maps
+  float res = 0.0f;
 
-    // This value gives us the starting row of the current channel's sections
-    // within the unrolled matrix
-    start_outRow = cur_channel * K * K;
+  // These values are the top left corner of the section we're applying the
+  // filter bank to within the input channels 
+  unsigned int start_inRow = idx / W_out;
+  unsigned int start_inCol = idx % W_out;
 
-    // For each element in the filter bank
-    for(p = 0; p < K; p++)
+  // For each element in the filter bank
+  #pragma unroll
+  for(int p = 0; p < K; p++)
+  {
+    #pragma unroll
+    for(int q = 0; q < K; q++)
     {
-      for(q = 0; q < K; q++)
-      {
-        // Now we calculate the exact row index for the unrolled matrix
-        cur_outRow = start_outRow + p * K + q;
-        // We use the macros to unroll the input data neatly :D
-        // We check if the data we want is in shared memory
-        if(calc3to1(cur_channel, start_inRow + p, start_inCol + q) < BLOCK_SIZE)
-          x2o(cur_outRow, cur_outCol) = x3s(cur_channel, start_inRow + p, start_inCol + q);
-        else // We have to get the input from global memory
-          x2o(cur_outRow, cur_outCol) = x3i(cur_channel, start_inRow + p, start_inCol + q);
-      }
+      res += Xs[(start_inRow + p)*W + (start_inCol+q)] * Kc[p * K + q];
     }
   }
+  Y[blockIdx.x * H_out * W_out * M + idx] = res;
 }
 
-/* Modifications to this matrix multiply kernel for specializing this project:
- * 1. Removed `A` parameter because it's now in constant memory (Kc)
- */
-__global__ void convMM(const float *B, float *C, 
-                       const int numARows, const int numAColumns,
-                       const int numBRows, const int numBColumns,
-                       const int numCRows, const int numCColumns)
-{
-  //__shared__ float subTileA[TILE_WIDTH][TILE_WIDTH];
-  __shared__ float subTileB[TILE_WIDTH][TILE_WIDTH];
+__global__ void convolution_layer(float* X, float* Y, const int C, 
+                                  const int H, const int W, 
+                                  const int W_out, const int M){
+  int H_out = H - K + 1;
+  int n, m, h, w, c, p, q;
+  int W_grid = ceilf((float)W_out/TILE_WIDTH);
 
-  int tx = threadIdx.x; int ty = threadIdx.y;
+  n = blockIdx.x;
+  m = blockIdx.y;
+  h = (blockIdx.z / W_grid)*TILE_WIDTH + threadIdx.y;
+  w = (blockIdx.z % W_grid)*TILE_WIDTH + threadIdx.x;
 
-  // Identify the row and column of the C element to work on
-  int Row = blockIdx.y*TILE_WIDTH + ty;
-  int Col = blockIdx.x*TILE_WIDTH + tx;
-  
-  // We need to calculate the phases to account for different shaped inputs
-  int phases = ceil(numAColumns/(TILE_WIDTH*1.0));
-
-  float Cvalue = 0;
-  
-  // Loop over the A and B tiles required to compute the C element
-  for (int m = 0; m < phases; ++m) 
-  {
-    // Store this useful value
-    int curTile = m * TILE_WIDTH;
-    // Collaborative loading of A and B tiles into shared memory
-    // We can only load data into our tiles if the data is there to load
-    
-    /* Removed because we'll just read constant memory directly
-    // First we check if we are within the bounds of input A
-    if (Row < numARows && tx + curTile < numAColumns) {
-      subTileA[ty][tx] = A[Row*numAColumns + curTile + tx];
-    }
-    else { // We are outside the bounds of input A
-      subTileA[ty][tx] = 0.;
-    }*/
-    
-    // Now we repeat for the bounds of input B
-    if (Col < numBColumns  && curTile + ty < numBRows) {
-      subTileB[ty][tx] = B[(curTile + ty)*numBColumns + Col];
-    }
-    else { // We are outside the bounds of input B
-      subTileB[ty][tx] = 0.;
-    }
-    
-    __syncthreads();
-    // Now we can update our local partial inner product
-    for (int k = 0; k < TILE_WIDTH; ++k) {
-      //Cvalue += subTileA[ty][k] * subTileB[k][tx];
-      Cvalue += Kc[Row*numAColumns + curTile + k] * subTileB[k][tx];
-    }
-    __syncthreads();
+  float acc = 0;
+  for (c = 0; c < C; c++) { 
+    for (p = 0; p < K; p++) 
+      for (q = 0; q < K; q++)
+        if(h < H_out && w < W_out)
+          acc += X[n*(C*H*W)+c*(H*W)+(h+p)*(W)+(w+q)] 
+                                * Kc[m*(C*K*K)+c*(K*K)+p*(K)+q];
   }
-  
-  // Make sure we are within the bounds of output C
-  if (Row < numCRows && Col < numCColumns) {
-    C[Row*numCColumns + Col] = Cvalue;
+  if(h < H_out && w < W_out)
+  {
+    Y[n*(M*H_out*W_out) + m*(H_out*W_out) + h*(W_out) + w] = acc;
   }
 }
 
@@ -212,77 +95,69 @@ __global__ void convMM(const float *B, float *C,
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
-    // Generate the streams
-    cudaStream_t stream[STREAM];
-    for(int i = 0; i < STREAM; i++)
-      cudaStreamCreate(&stream[i]);
-
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];      // Batch size
     const int C = x.shape_[1];      // Input Feature Maps
     const int H = x.shape_[2];      // Height of input maps
     const int W = x.shape_[3];      // Width  of input maps
     const int M = y.shape_[1];      // Output Feature Maps
-    const int K = k.shape_[3];      // Filter Dimensions
 
-    const int W_out = (W - K + 1);    // Height of output maps
-    const int H_out = (H - K + 1);    // Width  of output maps
+    const int H_out = (H - K + 1);    // Height of output maps
+    const int W_out = (W - K + 1);    // Width  of output maps
 
-    const int H_unroll = C * K * K;         // Height of unrolled matrix
-    const int W_unroll = H_out * W_out;     // Width  of unrolled matrix
+    const int FILTER_SIZE = (K * K);
+    const int BANK_SIZE = (M * C * FILTER_SIZE);
 
-    // Allocated the space for the unrolled input (which will get re-written)
-    float* x_unrolled;
-    cudaMalloc((void **)&x_unrolled, W_unroll * H_unroll * STREAM * sizeof(float));
+    // Set the constant memory for the filter banks
+    cudaMemcpyToSymbol(Kc, k.dptr_, BANK_SIZE*sizeof(float));
 
-    // Grab the pointer to the filter maps
-    const float* k_ptr = k.dptr_;
-    cudaMemcpyToSymbol(Kc, k_ptr, (M*C*K*K)*sizeof(float));
-
-    // ~~~ Set the kernel dimensions ~~~
-    // First we setup for the unroll kernels
-    const int num_threads = C * H_out * W_out;
-    const int unroll_blocks = ceil(num_threads / (BLOCK_SIZE * 1.0));
-    const dim3 unrollBlocks(BLOCK_SIZE, 1, 1);
-    const dim3 unrollGrid(unroll_blocks, 1, 1);
-    // Now we setup for the matrix kernels
-    const int maxRows = (M > H_unroll ? M:H_unroll);
-    const int maxCols = ((C*K*K) > W_unroll ? (C*K*K):W_unroll);
-    const dim3 matrixBlocks(TILE_WIDTH, TILE_WIDTH, 1);
-    const dim3 matrixGrid(ceil(maxCols / (TILE_WIDTH * 1.0)), ceil(maxRows / (TILE_WIDTH * 1.0)), 1);
-
-    // ~~~ Now we begin the bread n butter of all this hard labor ~~~
-    // For each image in the batch
-    for (int b = 0; b < B; b += STREAM)
+    /*if(C == 1)
     {
-      for(int i = 0; i < STREAM; i++)
+      // Generate the stream with the appropriate MXNet stream
+      cudaStream_t s = y.stream_->stream_;
+
+      //const int IN_SIZE = (H * W);
+      const int OUT_SIZE = (H_out * W_out);
+
+      // ~~~ Set the kernel dimensions ~~~
+      // Each grid will have one block for each image
+      const dim3 gridDim1(B, 1, 1);
+      // Each block will be the size of an output map, and compute each output map for an image
+      const dim3 blockDim1(OUT_SIZE, 1, 1);
+      // ~~~ Now we begin the bread n butter of all this hard labor ~~~
+      convMM<<<gridDim1, blockDim1, 0, s>>>(x.dptr_, y.dptr_, W,
+                                            H_out, W_out, M);
+    }*/
+    //else
+    //{
+      // Generate multiple streams
+      cudaStream_t stream[STREAM];
+      for (int i = 0; i < STREAM; ++i)
+        cudaStreamCreate(&stream[i]);
+
+      // ~~~ Set the kernel dimensions ~~~
+      int Z = ceil((float)W_out/TILE_WIDTH)*ceil((float)H_out/TILE_WIDTH);
+      const dim3 gridDim2(COMBINE, M, Z);
+      const dim3 blockDim2(TILE_WIDTH, TILE_WIDTH, 1);
+
+      // For each image in the batch
+      for (int b = 0; b < B; b += STREAM * COMBINE)
       {
-        float* xu_ptr1 = &x_unrolled[i * W_unroll * H_unroll];
-        float* x_ptr1 = &x.dptr_[(b+i)*C*H*W];
-        unroll_Kernel<<<unrollGrid, unrollBlocks, 0, stream[i]>>>(C, H, W, H_unroll, W_unroll,
-                                                                  W_out, K, x_ptr1, xu_ptr1);
+        for(int i = 0; i < STREAM; i++)
+        {
+          float* x_ptr = &x.dptr_[(b+i*COMBINE)*C*H*W];
+          float* y_ptr = &y.dptr_[(b+i*COMBINE)*M*W_out*H_out];
+          convolution_layer<<<gridDim2, blockDim2, 0, stream[i]>>>(x_ptr, y_ptr, C, H, W, W_out, M);
+        }
+        MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       }
-      MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-      for(int i = 0; i < STREAM; i++)
-      {
-        float* xu_ptr1 = &x_unrolled[i * W_unroll * H_unroll];
-        float* y_ptr1 = &y.dptr_[(b+i)*M*W_out*H_out];
-        convMM<<<matrixGrid, matrixBlocks, 0,stream[i]>>>(xu_ptr1, y_ptr1,
-                                                          M, (C*K*K),
-                                                          H_unroll, W_unroll,
-                                                          M, W_unroll);
-      }
-    }
+      // destroy cuda streams
+      for (int i = 0; i < STREAM; ++i)
+        cudaStreamDestroy(stream[i]);
+    //}
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
-    // MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-
-    // We free the unrolled matrix memory
-    MSHADOW_CUDA_CALL(cudaFree(x_unrolled));
-
-    // KILL THE STREAMS!!!
-    for(int i = 0; i < STREAM; i++)
-      cudaStreamDestroy(stream[i]);
+    MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 }
 
 /* 
