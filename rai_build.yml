@@ -18,5 +18,5 @@ commands:
     #- python m4.1.py
     #- /usr/bin/time python m4.1.py               # run and time milestone 4.1
     #- nvprof python m4.1.py                      # nvprof it
-    - nvprof -o constant10000-timeline.nvvp python m4.1.py     # generate timeline for nvvp
-    - nvprof --analysis-metrics -o constant10-analysis.nvvp python m4.1.py 10  # generate more data for nvvp
+    - nvprof -o fusion10000-timeline.nvvp python m4.1.py     # generate timeline for nvvp
+    - nvprof --analysis-metrics -o fusion10-analysis.nvvp python m4.1.py 10  # generate more data for nvvp
