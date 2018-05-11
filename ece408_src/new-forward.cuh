@@ -20,6 +20,9 @@ namespace op
 #define FILTER_SIZE 25
 #define MAX_FILTER_BANK 2400
 
+#define SHARED_WIDTH 36
+#define SHARED_SIZE 1296
+
 // We define constant memory for the filter data
 __constant__ float Kc[MAX_FILTER_BANK];
 
@@ -31,11 +34,16 @@ __constant__ float Kc[MAX_FILTER_BANK];
 #define HI_1 64   // Height of input maps
 #define WI_1 64   // Width  of input maps
 #define IN_SIZE1 4096 // Size of input maps
+#define TOTAL_IN_SIZE1 4096 // C1 * IN_SIZE1
 
 #define M1   6    // Output Feature Maps
 #define HO_1 60   // Height of output maps
 #define WO_1 60   // Width  of output maps
 #define OUT_SIZE1 3600  // Size of output maps
+#define TOTAL_OUT_SIZE1 21600 // M1 * IN_SIZE1
+
+#define Z1 4
+#define WGRID1 2
 
 /*********************/
 /* Layer 2 Constants */
@@ -45,109 +53,108 @@ __constant__ float Kc[MAX_FILTER_BANK];
 #define HI_2 30   // Height of input maps
 #define WI_2 30   // Width  of input maps
 #define IN_SIZE2 900 // Size of input maps
+#define TOTAL_IN_SIZE2 5400 // C2 * IN_SIZE2
 
 #define M2   16   // Output Feature Maps
 #define HO_2 26   // Height of output maps
 #define WO_2 26   // Width  of output maps
 #define OUT_SIZE2 676  // Size of output maps
+#define TOTAL_OUT_SIZE2 10816 // M2 * IN_SIZE2
 
-#define BS2_X 160
-#define BS2_Y 6
+#define Z2 1
+#define WGRID2 1
 
-__global__ void unroll_mm1(const float* X, float* Y)
-{
-  /* This kernel takes a *single* input image from convolution layer 1 and
-   * computes the output data for that image via unrolled indexing.
-   */
+__global__ void convolution_layer_shared1(float* X, float* Y){
 
-  // Macro for calculating 1D index from 3D inputs (which are actually 2D in layer 1)
-  #define calc2to1(i1, i0) ((i1) * (WI_1) + i0)
-  // Macro for accessing the 3 dimensional *input* data
-  #define x2i(i1, i0) X[calc2to1(i1, i0)]
-  // Macro for accessing the 3 dimensional kernel data
-  #define kc3(i2, i1, i0) Kc[(i2) * (FILTER_SIZE) + (i1) * (K) + i0]
-  // Macro for accessing the 3 dimensional output data (as 2D)
-  #define y2_1(i1, i0) Y[(i1) * (OUT_SIZE1) + i0]
+  __shared__ float X_s[SHARED_SIZE]; 
 
-  // Some local values
-  int start_inRow, start_inCol, p, q, cur_outMap, cur_outIdx;
-  // Grab the thread's index
-  int t = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+  int n, m, h0, w0, h_base, w_base, h, w;
 
-  // Check that the thread index maps to a column section within bounds
-  if (t < M1*OUT_SIZE1)
+  n = blockIdx.x;
+  m = blockIdx.y;
+  h0 = threadIdx.y;
+  w0 = threadIdx.x;
+  h_base = blockIdx.z / WGRID1 * TILE_WIDTH;
+  w_base = blockIdx.z % WGRID1 * TILE_WIDTH;
+  h = h_base + h0;
+  w = w_base + w0;
+
+  float acc = 0.;
+  //#pragma unroll
+  for (int i = h; i < h_base + SHARED_WIDTH; i+=TILE_WIDTH)
   {
-    float res = 0.0f; // Sum value initialization
-
-    // Determine which output map this thread corresponds to
-    cur_outMap = t / OUT_SIZE1;
-    // Determine which linear index this thread corresponds to within a single map
-    cur_outIdx = t % OUT_SIZE1;
-
-    // These values are the top left corner of the section we're applying the
-    // filter bank to within the input channel
-    start_inRow = cur_outIdx / WO_1; // Starting row in input
-    start_inCol = cur_outIdx % WO_1; // Starting column in input
-
-    // For each element in the filter bank
-    for(p = 0; p < K; p++)
+    //#pragma unroll
+    for (int j = w; j < w_base + SHARED_WIDTH; j+=TILE_WIDTH)
     {
-      for(q = 0; q < K; q++)
+      X_s[(i-h_base)*SHARED_WIDTH+j-w_base]=X[n*(TOTAL_IN_SIZE1)+i*WI_1+j]; //n,c,h(i),w(j)
+    }
+  }
+  __syncthreads();
+
+  if(h < HO_1 && w < WO_1)
+  {
+    #pragma unroll
+    for (int p = 0; p < K; p++)
+    {
+      #pragma unroll
+      for (int q = 0; q < K; q++)
       {
-        res += x2i(start_inRow + p, start_inCol + q) * kc3(cur_outMap, p, q);
+        acc += X_s[(h0+p)*SHARED_WIDTH+w0+q]*Kc[m*(C1*FILTER_SIZE)+p*K+q];
       }
     }
-    // Finally, set the according output element
-    y2_1(cur_outMap, cur_outIdx) = res;
+    __syncthreads();
+
+    Y[n*(TOTAL_OUT_SIZE1)+m*(OUT_SIZE1)+h*WO_1+w] = acc;
   }
 }
 
-__global__ void unroll_mm2(const float* X, float* Y)
-{
-  /* This kernel takes a *single* input image from convolution layer 1 and
-   * computes the output data for that image via unrolled indexing.
-   */
+__global__ void convolution_layer_shared2(float* X, float* Y){
 
-  // Macro for calculating 1D index from 3D inputs
-  #define calc3to1(i2, i1, i0) ((i2) * (IN_SIZE2) + (i1) * (WI_2) + i0)
-  // Macro for accessing the 3 dimensional *input* data
-  #define x3i(i2, i1, i0) X[calc3to1(i2, i1, i0)]
-  // Macro for accessing the 4 dimensional kernel data
-  #define kc4(i3, i2, i1, i0) Kc[(i3) * (C2 * FILTER_SIZE) + (i2) * (FILTER_SIZE) + (i1) * (K) + i0]
-  // Macro for accessing the 3 dimensional output data (as 2D)
-  #define y2_2(i1, i0) Y[(i1) * (OUT_SIZE2) + i0]
+  __shared__ float X_s[SHARED_SIZE]; 
 
-  // Some local values
-  int start_inRow, start_inCol, p, q, cur_outMap, cur_outIdx;
-  // Grab the thread's linear x index and y index
-  int x = blockIdx.x * BS2_X + threadIdx.x;
-  int y = threadIdx.y;
+  int n, m, h0, w0, h_base, w_base, h, w;
 
-  // Check that the thread index maps to a column section within bounds
-  if (x < M2*OUT_SIZE2)
+  n = blockIdx.x;
+  m = blockIdx.y;
+  h0 = threadIdx.y;
+  w0 = threadIdx.x;
+  h_base = blockIdx.z / WGRID2 * TILE_WIDTH;
+  w_base = blockIdx.z % WGRID2 * TILE_WIDTH;
+  h = h_base + h0;
+  w = w_base + w0;
+
+  float acc = 0.;
+  #pragma unroll
+  for (int c = 0; c < C2; c++)
   {
-    float res = 0.0f; // Sum value initialization
-
-    // Determine which output map this thread corresponds to
-    cur_outMap = x / OUT_SIZE2;
-    // Determine which linear index this thread corresponds to within a single map
-    cur_outIdx = x % OUT_SIZE2;
-
-    // These values are the top left corner of the section we're applying the
-    // filter bank to within the input channel
-    start_inRow = cur_outIdx / WO_2; // Starting row in input
-    start_inCol = cur_outIdx % WO_2; // Starting column in input
-
-    // For each element in the filter bank
-    for(p = 0; p < K; p++)
+    //#pragma unroll
+    for (int i = h; i < h_base + SHARED_WIDTH; i+=TILE_WIDTH)
     {
-      for(q = 0; q < K; q++)
+      //#pragma unroll
+      for (int j = w; j < w_base + SHARED_WIDTH; j+=TILE_WIDTH)
       {
-        res += x3i(y, start_inRow + p, start_inCol + q) * kc4(cur_outMap, y, p, q);
+        X_s[(i-h_base)*SHARED_WIDTH+j-w_base]=X[n*(TOTAL_IN_SIZE2)+c*(IN_SIZE2)+i*WI_2+j]; //n,c,h(i),w(j)
       }
     }
-    // Finally, set the according output element
-    atomicAdd( &(y2_2(cur_outMap, cur_outIdx)), res);
+    __syncthreads();
+
+    if(h < HO_2 && w < WO_2)
+    {
+      #pragma unroll
+      for (int p = 0; p < K; p++)
+      {
+        #pragma unroll
+        for (int q = 0; q < K; q++)
+        {
+          acc += X_s[(h0+p)*SHARED_WIDTH+w0+q]*Kc[m*(C2*FILTER_SIZE)+c*(FILTER_SIZE)+p*K+q];
+        }
+      }
+    }
+    __syncthreads();
+  }
+  if(h < HO_2 && w < WO_2)
+  {
+    Y[n*(TOTAL_OUT_SIZE2)+m*(OUT_SIZE2)+h*WO_2+w] = acc;
   }
 }
 
@@ -159,11 +166,6 @@ __global__ void unroll_mm2(const float* X, float* Y)
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
-    // Generate multiple streams
-    cudaStream_t stream[STREAM];
-    for (int i = 0; i < STREAM; ++i)
-      cudaStreamCreate(&stream[i]);
-
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];      // Batch size
     const int C = x.shape_[1];      // Input Feature Maps
@@ -174,48 +176,51 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // Set the constant memory for the filter banks
     cudaMemcpyToSymbol(Kc, k.dptr_, BANK_SIZE*sizeof(float));
 
-    if(C == 1)
-    {
-      // Generate the stream with the appropriate MXNet stream
-      //cudaStream_t s = y.stream_->stream_;
+    // Generate multiple streams
+    cudaStream_t stream[STREAM];
+    for (int i = 0; i < STREAM; ++i)
+      cudaStreamCreate(&stream[i]);
 
+    if( C == C1 )
+    {
       // ~~~ Set the kernel dimensions ~~~
-      // First we setup for the unroll kernels
-      const int num_threads = M1*OUT_SIZE1;
-      const int num_blocks = ceil(num_threads / (BLOCK_SIZE * 1.0));
-      const dim3 blockDim1(BLOCK_SIZE, 1, 1);
-      const dim3 gridDim1(num_blocks, 1, 1);
-      // ~~~ Now we begin the bread n butter of all this hard labor ~~~
+      const dim3 gridDim1(COMBINE, M1, Z1);
+      const dim3 blockDim1(TILE_WIDTH, TILE_WIDTH, 1);
+
       // For each image in the batch
-      for (int b = 0; b < B; b += STREAM)
+      for (int b = 0; b < B; b += STREAM * COMBINE)
       {
         for(int i = 0; i < STREAM; i++)
         {
-          float* x_ptr = &x.dptr_[(b+i)*IN_SIZE1];
-          float* y_ptr = &y.dptr_[(b+i)*M1*OUT_SIZE1];
-          unroll_mm1<<<gridDim1, blockDim1, 0, stream[i]>>>(x_ptr, y_ptr);
+          if(b+i*COMBINE < B)
+          {
+            float* x_ptr = &x.dptr_[(b+i*COMBINE)*TOTAL_IN_SIZE1];
+            float* y_ptr = &y.dptr_[(b+i*COMBINE)*TOTAL_OUT_SIZE1];
+            convolution_layer_shared1<<<gridDim1, blockDim1, 0, stream[i]>>>(x_ptr, y_ptr);
+          }
         }
+        MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       }
     }
-    else
+    else // C == C2
     {
       // ~~~ Set the kernel dimensions ~~~
-      // First we setup for the unroll kernels
-      const int num_threads_x = M2*OUT_SIZE2;
-      const int num_blocks_x = ceil(num_threads_x / (BS2_X * 1.0));
-      const dim3 blockDim2(BS2_X, BS2_Y, 1);
-      const dim3 gridDim2(num_blocks_x, 1, 1);
+      const dim3 gridDim2(COMBINE, M2, Z2);
+      const dim3 blockDim2(TILE_WIDTH, TILE_WIDTH, 1);
 
-      // ~~~ Now we begin the bread n butter of all this hard labor ~~~
       // For each image in the batch
-      for (int b = 0; b < B; b += STREAM)
+      for (int b = 0; b < B; b += STREAM * COMBINE)
       {
         for(int i = 0; i < STREAM; i++)
         {
-          float* x_ptr = &x.dptr_[(b+i)*C2*IN_SIZE2];
-          float* y_ptr = &y.dptr_[(b+i)*M2*OUT_SIZE2];
-          unroll_mm2<<<gridDim2, blockDim2, 0, stream[i]>>>(x_ptr, y_ptr);
+          if(b+i*COMBINE < B)
+          {
+            float* x_ptr = &x.dptr_[(b+i*COMBINE)*TOTAL_IN_SIZE2];
+            float* y_ptr = &y.dptr_[(b+i*COMBINE)*TOTAL_OUT_SIZE2];
+            convolution_layer_shared2<<<gridDim2, blockDim2, 0, stream[i]>>>(x_ptr, y_ptr);
+          }
         }
+        MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
       }
     }
     // destroy cuda streams
